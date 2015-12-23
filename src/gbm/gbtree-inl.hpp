@@ -240,6 +240,7 @@ class GBTree : public IGradBooster {
     }
     tparam.updater_initialized = 1;
   }
+  //构建新树，核心代码
   // do group specific group
   inline std::vector<tree::RegTree*>
   BoostNewTrees(const std::vector<bst_gpair> &gpair,
@@ -259,6 +260,9 @@ class GBTree : public IGradBooster {
     }
     // update the trees
     for (size_t i = 0; i < updaters.size(); ++i) {
+      //更新树，这里使用的是update的方法
+      //对于gbtree，看tree/update中的实现
+      //具体代码在tree/updater_colmaker-inl.hpp中
       updaters[i]->Update(gpair, p_fmat, info, new_trees);
     }    
     // optimization, update buffer, if possible

@@ -82,16 +82,21 @@ class ColMaker: public IUpdater {
     // constructor
     explicit Builder(const TrainParam &param) : param(param) {}
     // update one tree, growing
+    //具体地去构建一棵树
     virtual void Update(const std::vector<bst_gpair> &gpair,
                         IFMatrix *p_fmat,
                         const BoosterInfo &info,
                         RegTree *p_tree) {
       this->InitData(gpair, *p_fmat, info.root_index, *p_tree);
+      //初始化根节点
       this->InitNewNode(qexpand_, gpair, *p_fmat, info, *p_tree);
       for (int depth = 0; depth < param.max_depth; ++depth) {
+        //寻找最优分裂点
         this->FindSplit(depth, qexpand_, gpair, p_fmat, info, p_tree);
+        //根据最优分裂点，重新编排数据
         this->ResetPosition(qexpand_, p_fmat, *p_tree);
         this->UpdateQueueExpand(*p_tree, &qexpand_);
+        //初始化下一个分裂点
         this->InitNewNode(qexpand_, gpair, *p_fmat, info, *p_tree);
         // if nothing left to be expand, break
         if (qexpand_.size() == 0) break;
@@ -227,6 +232,8 @@ class ColMaker: public IUpdater {
       // use new nodes for qexpand
       qexpand = newnodes;
     }    
+    
+    //并行地找到给定特征id号(fid)的最优分裂点
     // parallel find the best split of current fid
     // this function does not support nested functions
     inline void ParallelFindSplit(const ColBatch::Inst &col,
@@ -450,6 +457,7 @@ class ColMaker: public IUpdater {
       }
     }
 
+    //枚举特定特征(fid)的可分裂点
     // enumerate the split values of specific feature
     inline void EnumerateSplit(const ColBatch::Entry *begin,
                                const ColBatch::Entry *end,
@@ -521,10 +529,12 @@ class ColMaker: public IUpdater {
       const int batch_size = std::max(static_cast<int>(nsize / this->nthread / 32), 1);
       #endif
       int poption = param.parallel_option;
+      //并发选项，默认是2，使用多线程
       if (poption == 2) {
         poption = static_cast<int>(nsize) * 2 < nthread ? 1 : 0;
       }
       if (poption == 0) {
+        //不需要多线程，串行获取各个特征最优分裂点
         #pragma omp parallel for schedule(dynamic, batch_size)
         for (bst_omp_uint i = 0; i < nsize; ++i) {
           const bst_uint fid = batch.col_index[i];
@@ -540,12 +550,16 @@ class ColMaker: public IUpdater {
           }
         }
       } else {
+        //并发获取各个特征最优分裂点
         for (bst_omp_uint i = 0; i < nsize; ++i) {
           this->ParallelFindSplit(batch[i], batch.col_index[i],
                                   fmat, gpair, info);
         }
       }      
     }
+    
+    //得到最优分裂点
+    //得到这一层的最优分裂点
     // find splits at current level, do split per level
     inline void FindSplit(int depth,
                           const std::vector<int> &qexpand,
@@ -555,16 +569,21 @@ class ColMaker: public IUpdater {
                           RegTree *p_tree) {
       std::vector<bst_uint> feat_set = feat_index;
       if (param.colsample_bylevel != 1.0f) {
+        //如果列采样比例不是1，那么对列数据进行采样
+        //构建每个节点时，只用候选特征的一部分，而不是尝试所有特征。
         random::Shuffle(feat_set);
         unsigned n = static_cast<unsigned>(param.colsample_bylevel * feat_index.size());
         utils::Check(n > 0, "colsample_bylevel is too small that no feature can be included");
         feat_set.resize(n);
       }
+     
       utils::IIterator<ColBatch> *iter = p_fmat->ColIterator(feat_set);
       while (iter->Next()) {
+        //对于每个待尝试的特征，找到该特征的最优分裂点
         this->UpdateSolution(iter->Value(), gpair, *p_fmat, info);
       }
       // after this each thread's stemp will get the best candidates, aggregate results
+      //并发地获取最优分裂点，并同步得到最优分裂点
       this->SyncBestSolution(qexpand);
       // get the best result, we can synchronize the solution
       for (size_t i = 0; i < qexpand.size(); ++i) {

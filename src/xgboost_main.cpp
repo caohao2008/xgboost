@@ -43,6 +43,7 @@ class BoostLearnTask {
       fprintf(stderr, "start %s:%d\n", pname.c_str(), rabit::GetRank());
     }
     if (rabit::IsDistributed() && data_split == "NONE") {
+      //默认用行切分
       this->SetParam("dsplit", "row");
     }    
     if (rabit::GetRank() != 0) {
