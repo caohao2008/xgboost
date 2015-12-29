@@ -92,6 +92,7 @@ class DMatrixSimple : public DataMatrix {
       rank = rabit::GetRank();
       npart = rabit::GetWorldSize();
     }
+    //按输入的hdfs地址分割数据并按节点的rank编号给每个节点分配分割后的数据
     LibSVMParser parser(
         dmlc::InputSplit::Create(uri, rank, npart, "text"), 16);
     this->Clear();

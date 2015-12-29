@@ -28,6 +28,7 @@ class HistMaker: public BaseMaker {
     param.learning_rate = lr / trees.size();
     // build tree
     for (size_t i = 0; i < trees.size(); ++i) {
+      //建立每颗树，这个和单机版逻辑一致,里面的Update具体逻辑不一样。
       this->Update(gpair, p_fmat, info, trees[i]);
     }
     param.learning_rate = lr;
@@ -121,25 +122,33 @@ class HistMaker: public BaseMaker {
   // set of working features
   std::vector<bst_uint> fwork_set;
   // update function implementation
+  //分布式地构建一棵树。与单机版实现不一样
   virtual void Update(const std::vector<bst_gpair> &gpair,
                       IFMatrix *p_fmat,
                       const BoosterInfo &info,
                       RegTree *p_tree) {
+    //多机并行计算每个特征的最大最小值并同步，初始化特征集合fwork_set
     this->InitData(gpair, *p_fmat, info.root_index, *p_tree);
     this->InitWorkSet(p_fmat, *p_tree, &fwork_set);
     for (int depth = 0; depth < param.max_depth; ++depth) {
+      //不同于传统的抽样+排序的生成候选分割点的策略，这里的实现基于可并行化的近似直方图算法，大幅加速生成分割点的效率。具体算法待陈天奇paper公布
       // reset and propose candidate split
       this->ResetPosAndPropose(gpair, p_fmat, info, fwork_set, *p_tree);
       // create histogram
+      //多线程按特征粒度并行对每个候选分割桶的一阶二阶导求和，并最终通过Allreduce多机求和同步统计量，用于后续计算全局分割点
       this->CreateHist(gpair, p_fmat, info, fwork_set, *p_tree);
       // find split based on histogram statistics
+      //按待更新树节点粒度并行，根据loss下降程度计算每个树节点的最佳split,分割该节点或设为叶子节点，更新树结构
       this->FindSplit(depth, gpair, p_fmat, info, fwork_set, p_tree);
+      //按样本粒度并行，更新各样本所属的树节点
       // reset position after split
       this->ResetPositionAfterSplit(p_fmat, *p_tree);
+      //更新层次遍历的树节点队列
       this->UpdateQueueExpand(*p_tree);
       // if nothing left to be expand, break
       if (qexpand.size() == 0) break;
     }
+    //更新叶子节点权重
     for (size_t i = 0; i < qexpand.size(); ++i) {
       const int nid = qexpand[i];
       (*p_tree)[nid].set_leaf(p_tree->stat(nid).base_weight * param.learning_rate);
@@ -207,6 +216,7 @@ class HistMaker: public BaseMaker {
       }
     }
   }
+  //分布式地找到最优分裂点
   inline void FindSplit(int depth,
                         const std::vector<bst_gpair> &gpair,
                         IFMatrix *p_fmat,
@@ -220,12 +230,14 @@ class HistMaker: public BaseMaker {
     bst_omp_uint nexpand = static_cast<bst_omp_uint>(qexpand.size());
     #pragma omp parallel for schedule(dynamic, 1)
     for (bst_omp_uint wid = 0; wid < nexpand; ++ wid) {
+      //在每个分布式节点上
       const int nid = qexpand[wid];
       utils::Assert(node2workindex[nid] == static_cast<int>(wid),
                     "node2workindex inconsistent");
       SplitEntry &best = sol[wid];
       TStats &node_sum = wspace.hset[0][num_feature + wid * (num_feature + 1)].data[0];
       for (size_t i = 0; i < fset.size(); ++ i) {
+        //枚举出可能的分裂节点
         EnumerateSplit(this->wspace.hset[0][i + wid * (num_feature+1)],
                        node_sum, fset[i], &best, &left_sum[wid]);
       }

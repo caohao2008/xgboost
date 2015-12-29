@@ -273,12 +273,17 @@ class BoostLearner : public rabit::Serializable {
    * \param iter current iteration number
    * \param p_train pointer to the data matrix
    */
+  //每轮建树迭代
   inline void UpdateOneIter(int iter, const DMatrix &train) {
     if (seed_per_iteration != 0 || rabit::IsDistributed()) {
+      //初始化随机种子
       random::Seed(this->seed * kRandSeedMagic + iter);
     }
+    //计算样本模型预测值
     this->PredictRaw(train, &preds_);
+    //计算样本一阶与二阶倒数
     obj_->GetGradient(preds_, train.info, iter, &gpair_);
+    //boost建树
     gbm_->DoBoost(train.fmat(), this->FindBufferOffset(train), train.info.info, &gpair_);
   }
   /*!

@@ -106,6 +106,7 @@ class GBTree : public IGradBooster {
     const std::vector<bst_gpair> &gpair = *in_gpair;
     std::vector<std::vector<tree::RegTree*> > new_trees;
     if (mparam.num_output_group == 1) {
+      //二分类
       new_trees.push_back(BoostNewTrees(gpair, p_fmat, buffer_offset, info, 0));
     } else {
       const int ngroup = mparam.num_output_group;
@@ -259,10 +260,12 @@ class GBTree : public IGradBooster {
       new_trees.back()->InitModel();
     }
     // update the trees
+    //串联多个updater, row based的分布式xgboostgrow树时用到的updater是updater_histmaker-inl.hpp中的CQHistMaker<GradStats>
     for (size_t i = 0; i < updaters.size(); ++i) {
       //更新树，这里使用的是update的方法
       //对于gbtree，看tree/update中的实现
-      //具体代码在tree/updater_colmaker-inl.hpp中
+      //具体代码在tree/updater_colmaker-inl.hpp中(单机版)
+      //tree/updater_histmaker-inl.hpp中CQHistMaker<GradStats>(分布式版本)
       updaters[i]->Update(gpair, p_fmat, info, new_trees);
     }    
     // optimization, update buffer, if possible
