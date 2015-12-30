@@ -133,6 +133,7 @@ class HistMaker: public BaseMaker {
     for (int depth = 0; depth < param.max_depth; ++depth) {
       //不同于传统的抽样+排序的生成候选分割点的策略，这里的实现基于可并行化的近似直方图算法，大幅加速生成分割点的效率。具体算法待陈天奇paper公布
       // reset and propose candidate split
+      //分布式地生成候选分裂点
       this->ResetPosAndPropose(gpair, p_fmat, info, fwork_set, *p_tree);
       // create histogram
       //多线程按特征粒度并行对每个候选分割桶的一阶二阶导求和，并最终通过Allreduce多机求和同步统计量，用于后续计算全局分割点
@@ -181,13 +182,16 @@ class HistMaker: public BaseMaker {
                           const std::vector <bst_uint> &fset,
                           const RegTree &tree)  = 0;
  private:
-  inline void EnumerateSplit(const HistUnit &hist, 
+    //枚举某个特征的所有可能分裂点，得到最优分裂点
+    inline void EnumerateSplit(const HistUnit &hist, 
                              const TStats &node_sum,
                              bst_uint fid,
                              SplitEntry *best,
                              TStats *left_sum) {
+    //如果该特征没有可分裂点，直接返回。
     if (hist.size == 0) return;
 
+    //根节点的gain
     double root_gain = node_sum.CalcGain(param);
     TStats s(param), c(param);
     for (bst_uint i = 0; i < hist.size; ++i) {
@@ -195,6 +199,7 @@ class HistMaker: public BaseMaker {
       if (s.sum_hess >= param.min_child_weight) {
         c.SetSubstract(node_sum, s);
         if (c.sum_hess >= param.min_child_weight) {
+          //每个分裂点的gain
           double loss_chg = s.CalcGain(param) + c.CalcGain(param) - root_gain;
           if (best->Update((float)loss_chg, fid, hist.cut[i], false)) {
             *left_sum = s;
@@ -203,6 +208,7 @@ class HistMaker: public BaseMaker {
       }
     }
     s.Clear();
+    //!!!!为啥还要倒着来一遍？
     for (bst_uint i = hist.size - 1; i != 0; --i) {
       s.Add(hist.data[i]);
       if (s.sum_hess >= param.min_child_weight) {
@@ -225,6 +231,7 @@ class HistMaker: public BaseMaker {
                         RegTree *p_tree) {
     const size_t num_feature = fset.size();
     // get the best split condition for each node
+    //每个单一节点上最优的分列点
     std::vector<SplitEntry> sol(qexpand.size());
     std::vector<TStats> left_sum(qexpand.size());    
     bst_omp_uint nexpand = static_cast<bst_omp_uint>(qexpand.size());
@@ -234,10 +241,11 @@ class HistMaker: public BaseMaker {
       const int nid = qexpand[wid];
       utils::Assert(node2workindex[nid] == static_cast<int>(wid),
                     "node2workindex inconsistent");
+      //得到单个节点上最优的分裂点对象，在下面的EnumerateSplit函数中填充该对象的值
       SplitEntry &best = sol[wid];
       TStats &node_sum = wspace.hset[0][num_feature + wid * (num_feature + 1)].data[0];
       for (size_t i = 0; i < fset.size(); ++ i) {
-        //枚举出可能的分裂节点
+        //枚举出可能的分裂节点,计算得到最优的节点。
         EnumerateSplit(this->wspace.hset[0][i + wid * (num_feature+1)],
                        node_sum, fset[i], &best, &left_sum[wid]);
       }
@@ -249,9 +257,11 @@ class HistMaker: public BaseMaker {
       const TStats &node_sum = wspace.hset[0][num_feature + wid * (num_feature + 1)].data[0];
       this->SetStats(p_tree, nid, node_sum);
       // set up the values
+      //最优分裂点的loss值
       p_tree->stat(nid).loss_chg = best.loss_chg;
       // now we know the solution in snode[nid], set split
       if (best.loss_chg > rt_eps) {
+        //如果当前loss优于目前最好的，使用当前分裂点做为新的最优分裂点
         p_tree->AddChilds(nid);
         (*p_tree)[nid].set_split(best.split_index(),
                                  best.split_value, best.default_left());
@@ -359,6 +369,7 @@ class CQHistMaker: public HistMaker<TStats> {
             .data[0] = node_stats[nid];
       }
     };
+    //分布式地同步数据
     // sync the histogram
     // if it is C++11, use lazy evaluation for Allreduce
 #if __cplusplus >= 201103L
@@ -436,6 +447,7 @@ class CQHistMaker: public HistMaker<TStats> {
       }
       utils::Assert(summary_array.size() == sketchs.size(), "shape mismatch");
     };
+    //分布式地统计
     if (summary_array.size() != 0) {
       size_t nbytes = WXQSketch::SummaryContainer::CalcMemCost(max_size);
 #if __cplusplus >= 201103L
@@ -657,14 +669,17 @@ class QuantileHistMaker: public HistMaker<TStats> {
                                   const RegTree &tree) {    
     // initialize the data structure
     int nthread = BaseMaker::get_nthread();
+    //sketchs是一个qexpand*num_feature的数组。每个qexpand上统计的是num_feature的量，填充相应的信息。reduce得到总体信息。
     sketchs.resize(this->qexpand.size() * tree.param.num_feature);
     for (size_t i = 0; i < sketchs.size(); ++i) {
+      //初始化每个数组成员
       sketchs[i].Init(info.num_row, this->param.sketch_eps);
     }
     // start accumulating statistics
     utils::IIterator<RowBatch> *iter = p_fmat->RowIterator();
     iter->BeforeFirst();
     while (iter->Next()) {
+      //每个RowBatch是全量数据中部分Row集合(行数据)
       const RowBatch &batch = iter->Value();
       // parallel convert to column major format
       utils::ParallelGroupBuilder<SparseBatch::Entry> builder(&col_ptr, &col_data, &thread_col_ptr);
@@ -673,9 +688,11 @@ class QuantileHistMaker: public HistMaker<TStats> {
       const bst_omp_uint nbatch = static_cast<bst_omp_uint>(batch.size);      
       #pragma omp parallel for schedule(static)
       for (bst_omp_uint i = 0; i < nbatch; ++i) {
+        //遍历RowBatch中的每一行
         RowBatch::Inst inst = batch[i];
         const bst_uint ridx = static_cast<bst_uint>(batch.base_rowid + i);
         int nid = this->position[ridx];
+        //!!!下面这坨代码在干啥？
         if (nid >= 0) {
           if (!tree[nid].is_leaf()) {
             this->position[ridx] = nid = HistMaker<TStats>::NextLevel(inst, tree, nid);
@@ -718,6 +735,7 @@ class QuantileHistMaker: public HistMaker<TStats> {
     unsigned max_size = this->param.max_sketch_size();
     // synchronize sketch
     summary_array.resize(sketchs.size());
+    //根据sketchs内容，填充summary内容
     for (size_t i = 0; i < sketchs.size(); ++i) {
       utils::WQuantileSketch<bst_float, bst_float>::SummaryContainer out;
       sketchs[i].GetSummary(&out);
@@ -725,7 +743,8 @@ class QuantileHistMaker: public HistMaker<TStats> {
       summary_array[i].SetPrune(out, max_size);
     }
     
-    size_t nbytes = WXQSketch::SummaryContainer::CalcMemCost(max_size);    
+    size_t nbytes = WXQSketch::SummaryContainer::CalcMemCost(max_size); 
+    //汇总得到所有节点上的RowBatch统计结果，得到全局的结果   
     sreducer.Allreduce(BeginPtr(summary_array), nbytes, summary_array.size());
     // now we get the final result of sketch, setup the cut
     this->wspace.cut.clear();
@@ -733,7 +752,10 @@ class QuantileHistMaker: public HistMaker<TStats> {
     this->wspace.rptr.push_back(0);
     for (size_t wid = 0; wid < this->qexpand.size(); ++wid) {
       for (int fid = 0; fid < tree.param.num_feature; ++fid) {
+        //每个节点上，每个特征的summary
+        //总的Summary为一个qexpand*num_feature的数组。每个节点更新整个数组中的一部分。例如qexpand=5,num_feature为30。那么总Summary为一个150维的数组。0号机器上统计0-29号下标变量。1号机器上统计30-59号下标变量。依次类推，全部更新完毕后汇总得到全部的信息。
         const WXQSketch::Summary &a = summary_array[wid * tree.param.num_feature + fid];
+        //更新每个机器上每个特征的cut point可分割点
         for (size_t i = 1; i < a.size; ++i) {
           bst_float cpt = a.data[i].value - rt_eps;
           if (i == 1 || cpt > this->wspace.cut.back()) {
