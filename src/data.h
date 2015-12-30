@@ -18,14 +18,17 @@ namespace xgboost {
 typedef unsigned bst_uint;
 /*! \brief float type, used for storing statistics */
 typedef float bst_float;
+//特征分桶的最小间隔
 const float rt_eps = 1e-5f;
 // min gap between feature values to allow a split happen
 const float rt_2eps = rt_eps * 2.0f;
 
 /*! \brief gradient statistics pair usually needed in gradient boosting */
 struct bst_gpair {
+  //一阶导
   /*! \brief gradient statistics */
   bst_float grad;
+  //二阶导
   /*! \brief second order gradient statistics */
   bst_float hess;
   bst_gpair(void) {}
@@ -38,8 +41,10 @@ struct bst_gpair {
  */
 struct BoosterInfo {
   /*! \brief number of rows in the data */
+  //行数
   size_t num_row;
   /*! \brief number of columns in the data */
+  //列数
   size_t num_col;
   /*!
    * \brief specified root index of each instance,
@@ -89,6 +94,7 @@ struct SparseBatch {
   /*! \brief batch size */
   size_t size;
 };
+//行数据，必须是原数据中连续子集
 /*! \brief read-only row batch, used to access row continuously */
 struct RowBatch : public SparseBatch {
   /*! \brief the offset of rowid of this batch */
@@ -106,6 +112,7 @@ struct RowBatch : public SparseBatch {
  * \brief read-only column batch, used to access columns,
  * the columns are not required to be continuous
  */
+//列数据，不必是原数据中连续子集
 struct ColBatch : public SparseBatch {
   /*! \brief column index of each columns in the data */
   const bst_uint *col_index;
@@ -135,12 +142,14 @@ class IFMatrix {
    * \param fset is the list of column index set that must be contained in the returning Column iterator
    * \return the column iterator, initialized so that it reads the elements in fset
    */
+  //定义列矩阵。参数控制有哪些列
   virtual utils::IIterator<ColBatch> *ColIterator(const std::vector<bst_uint> &fset) = 0;
   /*!
    * \brief check if column access is supported, if not, initialize column access
    * \param enabled whether certain feature should be included in column access
    * \param subsample subsample ratio when generating column access
    */
+  //初始化列矩阵。参数控制采样率
   virtual void InitColAccess(const std::vector<bool> &enabled, float subsample) = 0;
   // the following are column meta data, should be able to answer them fast
   /*! \return whether column access is enabled */
